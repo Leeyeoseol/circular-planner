@@ -1,0 +1,430 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>원형 하루 계획표</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+    <style>
+        body {
+            font-family: 'Inter', sans-serif;
+            touch-action: none;
+        }
+        .handle {
+            cursor: ew-resize;
+            transition: all 0.2s ease-in-out;
+        }
+        .handle:hover, .handle.dragging {
+            r: 12;
+            opacity: 1;
+        }
+        .slice-text {
+            -webkit-user-select: none;
+            -moz-user-select: none;
+            -ms-user-select: none;
+            user-select: none;
+            pointer-events: none;
+        }
+        .slice-path:hover {
+            opacity: 0.85;
+        }
+        .context-menu {
+            display: none;
+            position: absolute;
+            z-index: 1000;
+        }
+    </style>
+</head>
+<body class="bg-gray-100 dark:bg-gray-900 text-gray-800 dark:text-gray-200 flex flex-col items-center justify-center min-h-screen p-4 overflow-hidden">
+
+    <div class="w-full max-w-5xl mx-auto flex flex-col lg:flex-row items-center justify-center gap-8">
+        <!-- Control Panel -->
+        <div class="w-full lg:w-64 bg-white dark:bg-gray-800 p-6 rounded-2xl shadow-lg">
+            <h1 class="text-2xl font-bold text-center mb-2">원형 계획표</h1>
+            <p class="text-sm text-gray-500 dark:text-gray-400 text-center mb-6">시간 블록을 드래그하여 하루를 계획하세요.</p>
+            <button id="add-slice-btn" class="w-full bg-indigo-600 text-white font-semibold py-3 px-4 rounded-lg hover:bg-indigo-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-indigo-500 transition-colors duration-200 shadow-md">
+                + 새 계획 추가
+            </button>
+            <div id="info-panel" class="mt-6 p-4 bg-gray-100 dark:bg-gray-700 rounded-lg text-center h-24 flex flex-col justify-center">
+                <p class="text-sm text-gray-600 dark:text-gray-300">칸을 선택하세요</p>
+            </div>
+             <div class="mt-4 text-xs text-gray-400 dark:text-gray-500">
+                <p class="font-semibold mb-1">사용법:</p>
+                <ul class="list-disc list-inside space-y-1">
+                    <li>경계선 원을 드래그하여 시간 조절</li>
+                    <li>칸을 우클릭하여 텍스트 수정 및 삭제</li>
+                    <li>가운데 텍스트를 클릭하여 제목 수정</li>
+                </ul>
+            </div>
+        </div>
+
+        <!-- Circular Planner -->
+        <div class="relative w-full max-w-[500px] aspect-square flex items-center justify-center">
+            <svg id="planner-svg" class="w-full h-full touch-none"></svg>
+             <div id="center-text" contenteditable="true" class="absolute text-center text-xl font-semibold p-2 focus:outline-none focus:ring-2 focus:ring-indigo-500 rounded-lg max-w-[40%] break-words">
+                오늘의 계획
+            </div>
+        </div>
+    </div>
+    
+    <!-- Context Menu for slices -->
+    <div id="context-menu" class="context-menu bg-white dark:bg-gray-800 rounded-md shadow-lg overflow-hidden border border-gray-200 dark:border-gray-700">
+        <button id="edit-text-btn" class="block w-full text-left px-4 py-2 text-sm text-gray-700 dark:text-gray-200 hover:bg-gray-100 dark:hover:bg-gray-700">텍스트 수정</button>
+        <button id="delete-slice-btn" class="block w-full text-left px-4 py-2 text-sm text-red-600 dark:text-red-400 hover:bg-red-50 dark:hover:bg-red-900/20">삭제</button>
+    </div>
+
+
+    <script>
+        const svg = document.getElementById('planner-svg');
+        const infoPanel = document.getElementById('info-panel');
+        const addSliceBtn = document.getElementById('add-slice-btn');
+        const contextMenu = document.getElementById('context-menu');
+        const editTextBtn = document.getElementById('edit-text-btn');
+        const deleteSliceBtn = document.getElementById('delete-slice-btn');
+        const centerTextDiv = document.getElementById('center-text');
+
+        const centerX = 250;
+        const centerY = 250;
+        const radius = 220;
+        const textRadius = 160;
+        const holeRadius = 80;
+        const colors = ['#6366F1', '#818CF8', '#A5B4FC', '#C7D2FE', '#3730A3', '#4338CA', '#4F46E5'];
+
+        let slices = [
+            { id: 1, startAngle: 0, endAngle: 90, text: '오전 업무' },
+            { id: 2, startAngle: 90, endAngle: 180, text: '점심 및 휴식' },
+            { id: 3, startAngle: 180, endAngle: 270, text: '오후 업무' },
+            { id: 4, startAngle: 270, endAngle: 360, text: '저녁' },
+        ];
+        let nextId = 5;
+
+        let draggingHandle = null;
+        let selectedSlice = null;
+
+        // --- Core Functions ---
+        
+        function polarToCartesian(centerX, centerY, radius, angleInDegrees) {
+            const angleInRadians = (angleInDegrees - 90) * Math.PI / 180.0;
+            return {
+                x: centerX + (radius * Math.cos(angleInRadians)),
+                y: centerY + (radius * Math.sin(angleInRadians))
+            };
+        }
+
+        function describeArc(x, y, radius, startAngle, endAngle, innerRadius) {
+            const start = polarToCartesian(x, y, radius, endAngle);
+            const end = polarToCartesian(x, y, radius, startAngle);
+            const innerStart = polarToCartesian(x, y, innerRadius, endAngle);
+            const innerEnd = polarToCartesian(x, y, innerRadius, startAngle);
+
+            const largeArcFlag = endAngle - startAngle <= 180 ? "0" : "1";
+
+            const d = [
+                "M", start.x, start.y,
+                "A", radius, radius, 0, largeArcFlag, 0, end.x, end.y,
+                "L", innerEnd.x, innerEnd.y,
+                "A", innerRadius, innerRadius, 0, largeArcFlag, 1, innerStart.x, innerStart.y,
+                "L", start.x, start.y, "Z"
+            ].join(" ");
+
+            return d;
+        }
+
+        function angleToTime(angle) {
+            // 0 angle is 12:00 (noon)
+            let totalMinutes = (angle / 360) * 24 * 60;
+            let hours = Math.floor(totalMinutes / 60) + 12;
+            let minutes = Math.round(totalMinutes % 60);
+
+            if (hours >= 24) hours -= 24;
+            
+            const h = String(hours).padStart(2, '0');
+            const m = String(minutes).padStart(2, '0');
+
+            return `${h}:${m}`;
+        }
+        
+        function draw() {
+            svg.innerHTML = '';
+            svg.setAttribute('viewBox', '0 0 500 500');
+
+            slices.forEach((slice, index) => {
+                const g = document.createElementNS("http://www.w3.org/2000/svg", "g");
+                g.dataset.id = slice.id;
+
+                // Slice Path
+                const path = document.createElementNS("http://www.w3.org/2000/svg", "path");
+                path.setAttribute('d', describeArc(centerX, centerY, radius, slice.startAngle, slice.endAngle, holeRadius));
+                path.setAttribute('fill', colors[slice.id % colors.length]);
+                path.classList.add('slice-path', 'transition-opacity', 'duration-200');
+                path.addEventListener('click', () => selectSlice(slice));
+                path.addEventListener('contextmenu', (e) => showContextMenu(e, slice));
+                g.appendChild(path);
+                
+                // Text
+                const midAngle = slice.startAngle + (slice.endAngle - slice.startAngle) / 2;
+                const textPos = polarToCartesian(centerX, centerY, textRadius, midAngle);
+                
+                const text = document.createElementNS("http://www.w3.org/2000/svg", "text");
+                text.setAttribute('x', textPos.x);
+                text.setAttribute('y', textPos.y);
+                text.setAttribute('text-anchor', 'middle');
+                text.setAttribute('dominant-baseline', 'middle');
+                text.setAttribute('fill', 'white');
+                text.setAttribute('font-size', '16');
+                text.setAttribute('font-weight', 'bold');
+                text.classList.add('slice-text');
+
+                // Simple text wrapping
+                const maxChars = 15;
+                if(slice.text.length > maxChars) {
+                    const tspan1 = document.createElementNS("http://www.w3.org/2000/svg", "tspan");
+                    tspan1.setAttribute('x', textPos.x);
+                    tspan1.setAttribute('dy', '-0.6em');
+                    tspan1.textContent = slice.text.substring(0, maxChars);
+                    const tspan2 = document.createElementNS("http://www.w3.org/2000/svg", "tspan");
+                    tspan2.setAttribute('x', textPos.x);
+                    tspan2.setAttribute('dy', '1.2em');
+                    tspan2.textContent = slice.text.substring(maxChars);
+                    text.appendChild(tspan1);
+                    text.appendChild(tspan2);
+                } else {
+                    text.textContent = slice.text;
+                }
+                g.appendChild(text);
+
+                svg.appendChild(g);
+            });
+            
+            // Draw handles after all slices
+            slices.forEach((slice, index) => {
+                const handlePos = polarToCartesian(centerX, centerY, radius, slice.endAngle);
+                const handle = document.createElementNS("http://www.w3.org/2000/svg", "circle");
+                handle.setAttribute('cx', handlePos.x);
+                handle.setAttribute('cy', handlePos.y);
+                handle.setAttribute('r', 10);
+                handle.setAttribute('fill', 'white');
+                handle.setAttribute('stroke', '#3730A3');
+                handle.setAttribute('stroke-width', '3');
+                handle.classList.add('handle');
+                handle.dataset.sliceIndex = index;
+
+                handle.addEventListener('mousedown', startDrag);
+                handle.addEventListener('touchstart', startDrag);
+
+                svg.appendChild(handle);
+            });
+        }
+
+        // --- Event Handlers ---
+
+        function startDrag(e) {
+            e.preventDefault();
+            const target = e.currentTarget;
+            target.classList.add('dragging');
+            const sliceIndex = parseInt(target.dataset.sliceIndex);
+            
+            const prevSliceIndex = sliceIndex;
+            const nextSliceIndex = (sliceIndex + 1) % slices.length;
+            
+            draggingHandle = {
+                element: target,
+                prevSlice: slices[prevSliceIndex],
+                nextSlice: slices[nextSliceIndex]
+            };
+            
+            window.addEventListener('mousemove', onDrag);
+            window.addEventListener('mouseup', endDrag);
+            window.addEventListener('touchmove', onDrag);
+            window.addEventListener('touchend', endDrag);
+        }
+
+        function onDrag(e) {
+            if (!draggingHandle) return;
+            
+            const clientX = e.clientX || e.touches[0].clientX;
+            const clientY = e.clientY || e.touches[0].clientY;
+
+            const svgRect = svg.getBoundingClientRect();
+            const svgX = clientX - svgRect.left;
+            const svgY = clientY - svgRect.top;
+
+            const scaleX = 500 / svgRect.width;
+            const scaleY = 500 / svgRect.height;
+            
+            const trueX = svgX * scaleX;
+            const trueY = svgY * scaleY;
+            
+            let angle = Math.atan2(trueY - centerY, trueX - centerX) * 180 / Math.PI + 90;
+            if (angle < 0) angle += 360;
+            
+            const { prevSlice, nextSlice } = draggingHandle;
+            
+            // Constraint check
+            const minAngleSeparation = 5; // 5 degrees minimum
+            let prevSliceStart = prevSlice.startAngle;
+            let nextSliceEnd = nextSlice.endAngle;
+            
+            // Handle wrapping around 360/0
+            if (prevSliceStart > angle) prevSliceStart -= 360;
+            if (nextSliceEnd < angle) nextSliceEnd += 360;
+
+            if (angle > prevSliceStart + minAngleSeparation && angle < nextSliceEnd - minAngleSeparation) {
+                prevSlice.endAngle = angle % 360;
+                nextSlice.startAngle = angle % 360;
+
+                // Normalize angles
+                slices.forEach(s => {
+                    s.startAngle %= 360;
+                    s.endAngle %= 360;
+                });
+                
+                selectSlice(prevSlice);
+                draw();
+            }
+        }
+        
+        function endDrag(e) {
+            if (draggingHandle) {
+                draggingHandle.element.classList.remove('dragging');
+            }
+            draggingHandle = null;
+            window.removeEventListener('mousemove', onDrag);
+            window.removeEventListener('mouseup', endDrag);
+            window.removeEventListener('touchmove', onDrag);
+            window.removeEventListener('touchend', endDrag);
+        }
+        
+        function selectSlice(slice) {
+            selectedSlice = slice;
+            updateInfoPanel();
+            
+            // Highlight selected slice
+            document.querySelectorAll('.slice-path').forEach(p => {
+                const parentGroup = p.parentElement;
+                if (parentGroup && parentGroup.dataset.id == slice.id) {
+                    p.style.opacity = '1';
+                } else {
+                    p.style.opacity = '0.7';
+                }
+            });
+        }
+        
+        function updateInfoPanel() {
+            if (selectedSlice) {
+                const startAngle = selectedSlice.startAngle;
+                // Handle case where endAngle is 0 (or very close), treat as 360
+                const endAngle = (selectedSlice.endAngle < startAngle && selectedSlice.endAngle < 1) ? 360 : selectedSlice.endAngle;
+
+                const durationHours = ((endAngle - startAngle + 360) % 360) / 15;
+
+                infoPanel.innerHTML = `
+                    <p class="font-bold text-lg text-indigo-700 dark:text-indigo-300">${selectedSlice.text}</p>
+                    <p class="text-sm text-gray-700 dark:text-gray-200">${angleToTime(startAngle)} - ${angleToTime(endAngle)}</p>
+                    <p class="text-xs text-gray-500 dark:text-gray-400">(${durationHours.toFixed(1)}시간)</p>
+                `;
+            } else {
+                 infoPanel.innerHTML = `<p class="text-sm text-gray-600 dark:text-gray-300">칸을 선택하세요</p>`;
+            }
+        }
+        
+        function addSlice() {
+            if (slices.length >= 10) { // Limit slices
+                alert("계획은 최대 10개까지 추가할 수 있습니다.");
+                return;
+            }
+            
+            let largestSlice = slices.reduce((max, s) => {
+                const duration = (s.endAngle - s.startAngle + 360) % 360;
+                const maxDuration = (max.endAngle - max.startAngle + 360) % 360;
+                return duration > maxDuration ? s : max;
+            });
+            
+            const midPoint = largestSlice.startAngle + ((largestSlice.endAngle - largestSlice.startAngle + 360) % 360) / 2;
+            
+            const newSlice = {
+                id: nextId++,
+                startAngle: midPoint % 360,
+                endAngle: largestSlice.endAngle,
+                text: '새 계획'
+            };
+            largestSlice.endAngle = midPoint % 360;
+            
+            const originalIndex = slices.findIndex(s => s.id === largestSlice.id);
+            slices.splice(originalIndex + 1, 0, newSlice);
+            
+            draw();
+            selectSlice(newSlice);
+        }
+        
+        function deleteSlice(sliceToDelete) {
+            if (slices.length <= 1) {
+                alert("마지막 계획은 삭제할 수 없습니다.");
+                return;
+            }
+            const indexToDelete = slices.findIndex(s => s.id === sliceToDelete.id);
+            const prevSlice = slices[(indexToDelete - 1 + slices.length) % slices.length];
+            
+            prevSlice.endAngle = sliceToDelete.endAngle;
+            
+            slices.splice(indexToDelete, 1);
+            
+            selectedSlice = prevSlice;
+            draw();
+            updateInfoPanel();
+        }
+
+        // --- Context Menu Logic ---
+        function showContextMenu(e, slice) {
+            e.preventDefault();
+            selectSlice(slice);
+            contextMenu.style.display = 'block';
+            contextMenu.style.left = `${e.clientX}px`;
+            contextMenu.style.top = `${e.clientY}px`;
+
+            contextMenu.dataset.sliceId = slice.id;
+        }
+
+        function hideContextMenu() {
+            contextMenu.style.display = 'none';
+        }
+
+        // --- Init and Event Listeners ---
+        
+        addSliceBtn.addEventListener('click', addSlice);
+        
+        document.addEventListener('click', (e) => {
+            if (!contextMenu.contains(e.target)) {
+                hideContextMenu();
+            }
+        });
+
+        editTextBtn.addEventListener('click', () => {
+            const sliceId = contextMenu.dataset.sliceId;
+            const slice = slices.find(s => s.id == sliceId);
+            if (slice) {
+                const newText = prompt('새로운 계획 내용을 입력하세요:', slice.text);
+                if (newText !== null) {
+                    slice.text = newText;
+                    draw();
+                    updateInfoPanel();
+                }
+            }
+            hideContextMenu();
+        });
+
+        deleteSliceBtn.addEventListener('click', () => {
+             const sliceId = contextMenu.dataset.sliceId;
+            const slice = slices.find(s => s.id == sliceId);
+            if (slice && confirm(`'${slice.text}' 계획을 삭제하시겠습니까?`)) {
+                deleteSlice(slice);
+            }
+            hideContextMenu();
+        });
+
+        // Initial Draw
+        draw();
+    </script>
+</body>
+</html>
